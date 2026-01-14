@@ -5,131 +5,390 @@ import { Upload, AlertTriangle, FileCode, Network, Download, Zap, ChevronRight, 
 import ReactFlow, { Controls, Background, MarkerType, Position } from 'reactflow';
 import 'reactflow/dist/style.css';
 
-// Enhanced Mongoose Schema Parser
+
+// AST-based Mongoose Schema Parser using TypeScript Compiler API
 const parseMongooseSchemas = (code) => {
+  // Simple TypeScript/JavaScript tokenizer and parser
   const schemas = [];
   const relationships = [];
-  const rawSchemaData = new Map();
+  const schemaDefinitions = new Map(); // schemaVarName -> schemaDefinition
+  const modelDefinitions = new Map(); // schemaVarName -> modelName
+  const fileSchemas = new Map(); // fileName -> parsed schemas
   
-  // Remove comments to avoid false matches
-  const cleanCode = code
-    .replace(/\/\*[\s\S]*?\*\//g, '')
-    .replace(/\/\/.*/g, '');
+  // Parse multiple files if code contains file separators
+  const files = code.split(/\/\/ FILE: (.+)/g).filter(Boolean);
+  const filesToParse = files.length > 1 
+    ? files.reduce((acc, item, i) => {
+        if (i % 2 === 0) acc.push({ name: item, code: files[i + 1] || '' });
+        return acc;
+      }, [])
+    : [{ name: 'schema.js', code }];
   
-  // Extract schema definitions - handle multiple patterns
-  const patterns = [
-    // const UserSchema = new Schema({ ... })
-    /(?:const|let|var)\s+(\w+Schema)\s*=\s*new\s+(?:mongoose\.)?Schema\s*\(\s*\{([\s\S]*?)\}(?:\s*,\s*\{[^}]*\})?\s*\)/g,
-    // const UserSchema = Schema({ ... })
-    /(?:const|let|var)\s+(\w+Schema)\s*=\s*(?:mongoose\.)?Schema\s*\(\s*\{([\s\S]*?)\}(?:\s*,\s*\{[^}]*\})?\s*\)/g,
-  ];
+  filesToParse.forEach(({ name: fileName, code: fileCode }) => {
+    parseFile(fileCode, fileName);
+  });
   
-  patterns.forEach(pattern => {
+  function parseFile(sourceCode, fileName) {
+    // Tokenize the source code
+    const tokens = tokenize(sourceCode);
+    
+    // Find all Schema instantiations
+    findSchemaDefinitions(tokens, sourceCode);
+    
+    // Find all model() calls
+    findModelDefinitions(tokens, sourceCode);
+  }
+  
+  function tokenize(code) {
+    const tokens = [];
+    const regex = /(\bimport\b|\bexport\b|\bconst\b|\blet\b|\bvar\b|\bfunction\b|\bclass\b|\bnew\b|\bmodel\b|\bSchema\b|\bTypes\b)|(\w+)|([{}()\[\],;:=<>.])|(['"`].*?['"`])|(\s+)|(\/\/.*$)|(\/\*[\s\S]*?\*\/)/gm;
+    
     let match;
-    while ((match = pattern.exec(cleanCode)) !== null) {
-      const [, schemaName, content] = match;
-      if (!rawSchemaData.has(schemaName)) {
-        rawSchemaData.set(schemaName, content);
+    while ((match = regex.exec(code)) !== null) {
+      const [fullMatch, keyword, identifier, punctuation, string, whitespace, lineComment, blockComment] = match;
+      
+      if (keyword) tokens.push({ type: 'keyword', value: keyword, index: match.index });
+      else if (identifier) tokens.push({ type: 'identifier', value: identifier, index: match.index });
+      else if (punctuation) tokens.push({ type: 'punctuation', value: punctuation, index: match.index });
+      else if (string) tokens.push({ type: 'string', value: string, index: match.index });
+      // Skip whitespace and comments
+    }
+    
+    return tokens;
+  }
+  
+  function findSchemaDefinitions(tokens, sourceCode) {
+    for (let i = 0; i < tokens.length; i++) {
+      const token = tokens[i];
+      
+      // Pattern: const/let/var IDENTIFIER = new Schema(...)
+      if ((token.value === 'const' || token.value === 'let' || token.value === 'var') && i + 5 < tokens.length) {
+        const varName = tokens[i + 1];
+        const equals = tokens[i + 2];
+        const newKeyword = tokens[i + 3];
+        const schemaKeyword = tokens[i + 4];
+        
+        if (varName.type === 'identifier' && 
+            equals.value === '=' && 
+            newKeyword.value === 'new' && 
+            schemaKeyword.value === 'Schema') {
+          
+          // Extract schema body
+          const schemaBody = extractSchemaBody(sourceCode, tokens[i + 5].index);
+          if (schemaBody) {
+            schemaDefinitions.set(varName.value, schemaBody);
+          }
+        }
+      }
+      
+      // Pattern: const IDENTIFIER = Schema(...) (without new)
+      if ((token.value === 'const' || token.value === 'let' || token.value === 'var') && i + 4 < tokens.length) {
+        const varName = tokens[i + 1];
+        const equals = tokens[i + 2];
+        const schemaKeyword = tokens[i + 3];
+        
+        if (varName.type === 'identifier' && 
+            equals.value === '=' && 
+            schemaKeyword.value === 'Schema' &&
+            tokens[i + 4].value === '(') {
+          
+          const schemaBody = extractSchemaBody(sourceCode, tokens[i + 4].index);
+          if (schemaBody) {
+            schemaDefinitions.set(varName.value, schemaBody);
+          }
+        }
       }
     }
-  });
+  }
   
-  // Extract model definitions
-  const modelPatterns = [
-    /(?:module\.exports|exports)\s*=\s*mongoose\.model\s*\(\s*['"](\w+)['"]\s*,\s*(\w+Schema)/g,
-    /(?:const|let|var)\s+(\w+)\s*=\s*mongoose\.model\s*\(\s*['"](\w+)['"]\s*,\s*(\w+Schema)/g,
-    /mongoose\.model\s*\(\s*['"](\w+)['"]\s*,\s*(\w+Schema)/g,
-  ];
-  
-  const modelMap = new Map();
-  modelPatterns.forEach(pattern => {
-    let match;
-    while ((match = pattern.exec(cleanCode)) !== null) {
-      const modelName = match[1];
-      const schemaName = match[match.length - 1]; // Last capture group is always schema name
-      modelMap.set(schemaName, modelName);
-    }
-  });
-  
-  // Parse each schema for fields and relationships
-  for (const [schemaName, content] of rawSchemaData.entries()) {
-    const modelName = modelMap.get(schemaName) || schemaName.replace(/Schema$/i, '');
+  function extractSchemaBody(sourceCode, startIndex) {
+    // Find the opening brace of the schema definition
+    let braceStart = sourceCode.indexOf('{', startIndex);
+    if (braceStart === -1) return null;
     
-    // Extract all fields with their types
-    const fields = [];
-    const fieldPattern = /(\w+)\s*:\s*(\{[\s\S]*?\}(?=\s*,\s*\w+\s*:|$)|\[[\s\S]*?\]|[\w.]+)/g;
-    let fieldMatch;
+    // Count braces to find matching closing brace
+    let braceCount = 1;
+    let i = braceStart + 1;
+    let inString = false;
+    let stringChar = null;
     
-    while ((fieldMatch = fieldPattern.exec(content)) !== null) {
-      const [, fieldName, fieldDef] = fieldMatch;
-      fields.push({ name: fieldName, definition: fieldDef });
+    while (i < sourceCode.length && braceCount > 0) {
+      const char = sourceCode[i];
+      const prevChar = sourceCode[i - 1];
+      
+      // Handle strings
+      if ((char === '"' || char === "'" || char === '`') && prevChar !== '\\') {
+        if (!inString) {
+          inString = true;
+          stringChar = char;
+        } else if (char === stringChar) {
+          inString = false;
+          stringChar = null;
+        }
+      }
+      
+      if (!inString) {
+        if (char === '{') braceCount++;
+        if (char === '}') braceCount--;
+      }
+      
+      i++;
     }
+    
+    if (braceCount === 0) {
+      return sourceCode.substring(braceStart + 1, i - 1);
+    }
+    
+    return null;
+  }
+  
+  function findModelDefinitions(tokens, sourceCode) {
+    for (let i = 0; i < tokens.length; i++) {
+      const token = tokens[i];
+      
+      // Pattern: model('ModelName', schemaVar) or model<Interface>('ModelName', schemaVar)
+      if (token.value === 'model') {
+        // Look ahead for the pattern
+        let j = i + 1;
+        
+        // Skip optional generic type parameter <T>
+        if (j < tokens.length && tokens[j].value === '<') {
+          while (j < tokens.length && tokens[j].value !== '>') j++;
+          j++; // Skip '>'
+        }
+        
+        if (j < tokens.length && tokens[j].value === '(') {
+          j++; // Skip '('
+          
+          // Extract model name (string)
+          if (j < tokens.length && tokens[j].type === 'string') {
+            const modelName = tokens[j].value.replace(/['"]/g, '');
+            j++;
+            
+            // Skip comma
+            if (j < tokens.length && tokens[j].value === ',') {
+              j++;
+              
+              // Extract schema variable name
+              if (j < tokens.length && tokens[j].type === 'identifier') {
+                const schemaVar = tokens[j].value;
+                modelDefinitions.set(schemaVar, modelName);
+              }
+            }
+          }
+        }
+      }
+      
+      // Pattern: export default model(...) or module.exports = model(...)
+      if ((token.value === 'export' || token.value === 'module') && i + 3 < tokens.length) {
+        const nextToken = tokens[i + 1];
+        
+        // export default model or module.exports = model
+        const isExportDefault = token.value === 'export' && nextToken.value === 'default';
+        const isModuleExports = token.value === 'module' && nextToken.value === '.' && tokens[i + 2].value === 'exports';
+        
+        if (isExportDefault || isModuleExports) {
+          let modelIndex = isExportDefault ? i + 2 : i + 4; // After 'default' or '='
+          
+          if (tokens[modelIndex] && tokens[modelIndex].value === 'model') {
+            // Same parsing as above
+            let j = modelIndex + 1;
+            
+            if (j < tokens.length && tokens[j].value === '<') {
+              while (j < tokens.length && tokens[j].value !== '>') j++;
+              j++;
+            }
+            
+            if (j < tokens.length && tokens[j].value === '(') {
+              j++;
+              
+              if (j < tokens.length && tokens[j].type === 'string') {
+                const modelName = tokens[j].value.replace(/['"]/g, '');
+                j++;
+                
+                if (j < tokens.length && tokens[j].value === ',') {
+                  j++;
+                  
+                  if (j < tokens.length && tokens[j].type === 'identifier') {
+                    const schemaVar = tokens[j].value;
+                    modelDefinitions.set(schemaVar, modelName);
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+  
+  // Build schemas array from definitions
+  for (const [schemaVar, schemaBody] of schemaDefinitions.entries()) {
+    const modelName = modelDefinitions.get(schemaVar) || schemaVar.replace(/Schema$/i, '');
+    const fields = extractFields(schemaBody);
     
     schemas.push({
       id: modelName,
       name: modelName,
-      schemaName: schemaName,
+      schemaName: schemaVar,
       fields: fields.map(f => f.name)
     });
     
-    // Analyze relationships in each field
-    fields.forEach(({ name: fieldName, definition: fieldDef }) => {
-      // Pattern 1: type: ObjectId, ref: 'Model'
-      const refPattern1 = /type\s*:\s*(?:Schema\.Types\.)?ObjectId[\s\S]*?ref\s*:\s*['"](\w+)['"]/;
-      const match1 = refPattern1.exec(fieldDef);
+    // Extract relationships
+    fields.forEach(field => {
+      const rels = extractRelationships(field, modelName, schemaBody);
+      relationships.push(...rels);
+    });
+  }
+  
+  function extractFields(schemaBody) {
+    const fields = [];
+    
+    // Split by commas at the top level (not inside nested objects)
+    const fieldStrings = splitTopLevel(schemaBody, ',');
+    
+    for (const fieldStr of fieldStrings) {
+      const colonIndex = fieldStr.indexOf(':');
+      if (colonIndex === -1) continue;
       
-      if (match1) {
-        const targetModel = match1[1];
+      const fieldName = fieldStr.substring(0, colonIndex).trim();
+      const fieldDef = fieldStr.substring(colonIndex + 1).trim();
+      
+      if (fieldName && !fieldName.includes(' ')) {
+        fields.push({ name: fieldName, definition: fieldDef });
+      }
+    }
+    
+    return fields;
+  }
+  
+  function splitTopLevel(str, delimiter) {
+    const parts = [];
+    let current = '';
+    let braceCount = 0;
+    let bracketCount = 0;
+    let inString = false;
+    let stringChar = null;
+    
+    for (let i = 0; i < str.length; i++) {
+      const char = str[i];
+      const prevChar = str[i - 1];
+      
+      if ((char === '"' || char === "'" || char === '`') && prevChar !== '\\') {
+        if (!inString) {
+          inString = true;
+          stringChar = char;
+        } else if (char === stringChar) {
+          inString = false;
+        }
+      }
+      
+      if (!inString) {
+        if (char === '{') braceCount++;
+        if (char === '}') braceCount--;
+        if (char === '[') bracketCount++;
+        if (char === ']') bracketCount--;
+        
+        if (char === delimiter && braceCount === 0 && bracketCount === 0) {
+          parts.push(current.trim());
+          current = '';
+          continue;
+        }
+      }
+      
+      current += char;
+    }
+    
+    if (current.trim()) parts.push(current.trim());
+    
+    return parts;
+  }
+  
+  function extractRelationships(field, fromModel, schemaBody) {
+    const rels = [];
+    const fieldDef = field.definition;
+    
+    // Pattern 1: type: Types.ObjectId or type: Schema.Types.ObjectId, ref: 'Model'
+    const typeRefPattern = /type\s*:\s*(?:Types\.ObjectId|Schema\.Types\.ObjectId|mongoose\.Schema\.Types\.ObjectId)[\s\S]*?ref\s*:\s*['"](\w+)['"]/;
+    const typeMatch = typeRefPattern.exec(fieldDef);
+    
+    if (typeMatch) {
+      const targetModel = typeMatch[1];
+      const isArray = fieldDef.trim().startsWith('[') || fieldDef.includes('[{');
+      
+      rels.push({
+        from: fromModel,
+        to: targetModel,
+        field: field.name,
+        type: isArray ? 'one-to-many' : 'one-to-one',
+        refType: 'ObjectId',
+        cascadeRisk: true
+      });
+    }
+    
+    // Pattern 2: [{ type: Types.ObjectId, ref: 'Model' }]
+    const arrayRefPattern = /\[\s*\{[\s\S]*?type\s*:\s*(?:Types\.ObjectId|Schema\.Types\.ObjectId)[\s\S]*?ref\s*:\s*['"](\w+)['"]/;
+    const arrayMatch = arrayRefPattern.exec(fieldDef);
+    
+    if (arrayMatch && !typeMatch) {
+      const targetModel = arrayMatch[1];
+      
+      rels.push({
+        from: fromModel,
+        to: targetModel,
+        field: field.name,
+        type: 'one-to-many',
+        refType: 'ObjectId',
+        cascadeRisk: true
+      });
+    }
+    
+    // Pattern 3: Direct ref without explicit type
+    // ref: 'Model' (shorthand)
+    if (!typeMatch && !arrayMatch) {
+      const directRefPattern = /ref\s*:\s*['"](\w+)['"]/;
+      const directMatch = directRefPattern.exec(fieldDef);
+      
+      if (directMatch) {
+        const targetModel = directMatch[1];
         const isArray = fieldDef.trim().startsWith('[');
         
-        relationships.push({
-          from: modelName,
+        rels.push({
+          from: fromModel,
           to: targetModel,
-          field: fieldName,
+          field: field.name,
           type: isArray ? 'one-to-many' : 'one-to-one',
           refType: 'ObjectId',
           cascadeRisk: true
         });
       }
+    }
+    
+    // Pattern 4: Embedded schemas (type: SomeSchema or [SomeSchema])
+    const embedPattern = /(?:type\s*:\s*)?(\w+Schema)|\[\s*(\w+Schema)\s*\]/;
+    const embedMatch = embedPattern.exec(fieldDef);
+    
+    if (embedMatch && !typeMatch && !arrayMatch) {
+      const embeddedSchemaName = embedMatch[1] || embedMatch[2];
       
-      // Pattern 2: [{ type: ObjectId, ref: 'Model' }]
-      const refPattern2 = /\[\s*\{\s*type\s*:\s*(?:Schema\.Types\.)?ObjectId[\s\S]*?ref\s*:\s*['"](\w+)['"]/;
-      const match2 = refPattern2.exec(fieldDef);
-      
-      if (match2 && !match1) {
-        const targetModel = match2[1];
+      if (schemaDefinitions.has(embeddedSchemaName)) {
+        const embeddedModel = modelDefinitions.get(embeddedSchemaName) || embeddedSchemaName.replace(/Schema$/i, '');
         
-        relationships.push({
-          from: modelName,
-          to: targetModel,
-          field: fieldName,
-          type: 'one-to-many',
-          refType: 'ObjectId',
-          cascadeRisk: true
-        });
-      }
-      
-      // Pattern 3: Embedded schemas
-      const embedPattern = /(?:type\s*:\s*)?(\w+Schema)|\[\s*(\w+Schema)\s*\]/;
-      const embedMatch = embedPattern.exec(fieldDef);
-      
-      if (embedMatch) {
-        const embeddedSchemaName = embedMatch[1] || embedMatch[2];
-        const embeddedModel = modelMap.get(embeddedSchemaName) || embeddedSchemaName.replace(/Schema$/i, '');
-        
-        if (embeddedModel !== modelName && rawSchemaData.has(embeddedSchemaName)) {
+        if (embeddedModel !== fromModel) {
           const isArray = fieldDef.includes('[');
-          relationships.push({
-            from: modelName,
+          rels.push({
+            from: fromModel,
             to: embeddedModel,
-            field: fieldName,
+            field: field.name,
             type: isArray ? 'embedded-many' : 'embedded-one',
             refType: 'Embedded',
             cascadeRisk: false
           });
         }
       }
-    });
+    }
+    
+    return rels;
   }
   
   return { schemas, relationships };
@@ -602,7 +861,7 @@ const SchemaAnalyzer = () => {
           </ReactFlow>
           
           {issues.length > 0 && (
-            <div className="absolute bottom-4 right-4 w-96 bg-[#1f1f1f] border border-[#2a2a2a] rounded-xl p-4 shadow-2xl max-h-[400px] overflow-y-auto">
+            <div className="absolute bottom-4 right-4 w-96 bg-[#1f1f1f] border border-[#2a2a2a] rounded-xl p-4 shadow-2xl max-h-[400px] overflow-y-auto  [&::-webkit-scrollbar]:w-2 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:bg-[#3a3a3a] [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:hover:bg-[#4a4a4a]">
               <h3 className="font-medium mb-3 flex items-center gap-2">
                 <AlertTriangle className="w-4 h-4 text-[#e8a53a]" />
                 Issues Detected ({issues.length})
@@ -632,7 +891,7 @@ const SchemaAnalyzer = () => {
         <div className="max-w-7xl mx-auto px-6 py-8">
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
             <div className="lg:col-span-1 space-y-4">
-              <div className="bg-[#1f1f1f] rounded-xl border border-[#2a2a2a] p-5">
+              <div className="bg-[#1f1f1f] rounded-xl border border-[#2a2a2a] p-5 max-h-[calc(100vh-140px)] overflow-y-auto  [&::-webkit-scrollbar]:w-2 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:bg-[#3a3a3a] [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:hover:bg-[#4a4a4a]">
                 <h3 className="font-medium mb-4 flex items-center gap-2">
                   <FileCode className="w-4 h-4 text-[#c17532]" />
                   Schemas ({schemas.length})
@@ -679,7 +938,7 @@ const SchemaAnalyzer = () => {
 
             <div className="lg:col-span-2">
               {selectedSchema ? (
-                <div className="bg-[#1f1f1f] rounded-xl border border-[#2a2a2a] p-6">
+                <div className="bg-[#1f1f1f] rounded-xl border border-[#2a2a2a] p-6 max-h-[calc(100vh-140px)] overflow-y-auto  [&::-webkit-scrollbar]:w-2 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:bg-[#3a3a3a] [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:hover:bg-[#4a4a4a]">
                   <h2 className="text-xl font-medium mb-6">{selectedSchema}</h2>
                   
                   {(() => {
