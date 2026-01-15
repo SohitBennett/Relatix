@@ -1,9 +1,10 @@
 'use client'
 
-import React, { useState, useCallback, useMemo } from 'react';
-import { Upload, AlertTriangle, FileCode, Network, Download, Zap, ChevronRight, AlertCircle, CheckCircle, XCircle } from 'lucide-react';
-import ReactFlow, { Controls, Background, MarkerType, Position } from 'reactflow';
+import React, { useState, useCallback, useMemo, useRef } from 'react';
+import { Upload, AlertTriangle, FileCode, Network, Download, Zap, ChevronRight, AlertCircle, CheckCircle, XCircle, Info, TrendingUp, Database, Camera, ChevronDown, ChevronUp } from 'lucide-react';
+import ReactFlow, { Controls, Background, MarkerType, Position, Panel, ReactFlowProvider, Handle } from 'reactflow';
 import 'reactflow/dist/style.css';
+import { toPng, toSvg } from 'html-to-image';
 
 
 // AST-based Mongoose Schema Parser using TypeScript Compiler API
@@ -488,6 +489,74 @@ const detectIssues = (schemas, relationships) => {
   return issues;
 };
 
+// Custom Node Component with Field Details
+const SchemaNode = ({ data }) => {
+  const [showTooltip, setShowTooltip] = useState(false);
+  
+  return (
+    <div 
+      className="relative"
+      onMouseEnter={() => setShowTooltip(true)}
+      onMouseLeave={() => setShowTooltip(false)}
+    >
+      {/* Target Handle - for incoming edges */}
+      <Handle
+        type="target"
+        position={Position.Left}
+        style={{ background: '#c17532', width: 8, height: 8 }}
+      />
+      
+      <div className="bg-[#1a1a1a] border border-[#3a3a3a] rounded-lg px-4 py-3 min-w-[160px] hover:border-[#c17532] transition-all cursor-pointer shadow-lg">
+        <div className="flex items-center justify-between gap-3">
+          <div className="flex-1 min-w-0">
+            <div className="font-medium text-sm text-[#e8e8e8] truncate">{data.label}</div>
+            <div className="flex items-center gap-2 mt-1">
+              <span className="text-xs text-[#9b9b9b] flex items-center gap-1">
+                <Database className="w-3 h-3" />
+                {data.fieldCount || 0} fields
+              </span>
+            </div>
+          </div>
+          {data.hasIssues && (
+            <div className="flex-shrink-0">
+              <AlertTriangle className="w-4 h-4 text-[#e8a53a]" />
+            </div>
+          )}
+        </div>
+      </div>
+      
+      {/* Source Handle - for outgoing edges */}
+      <Handle
+        type="source"
+        position={Position.Right}
+        style={{ background: '#c17532', width: 8, height: 8 }}
+      />
+      
+      {/* Tooltip - Now hoverable and scrollable */}
+      {showTooltip && data.fields && data.fields.length > 0 && (
+        <div 
+          className="absolute z-50 left-full ml-2 top-0 w-64 bg-[#1f1f1f] border border-[#3a3a3a] rounded-lg shadow-2xl p-3"
+          onMouseEnter={() => setShowTooltip(true)}
+          onMouseLeave={() => setShowTooltip(false)}
+        >
+          <div className="text-xs font-medium text-[#c17532] mb-2 uppercase tracking-wide">Fields ({data.fields.length})</div>
+          <div className="space-y-1 max-h-48 overflow-y-auto [&::-webkit-scrollbar]:w-2 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:bg-[#3a3a3a] [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:hover:bg-[#4a4a4a]">
+            {data.fields.map((field, idx) => (
+              <div key={idx} className="text-xs text-[#e8e8e8] font-mono bg-[#1a1a1a] px-2 py-1 rounded">
+                {field}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+const nodeTypes = {
+  schemaNode: SchemaNode,
+};
+
 // Generate hierarchical layout for react-flow
 const generateHierarchicalLayout = (schemas, relationships) => {
   const nodes = [];
@@ -548,27 +617,25 @@ const generateHierarchicalLayout = (schemas, relationships) => {
     
     nodes.push({
       id: schema.id,
-      type: 'default',
-      data: { label: schema.name },
+      type: 'schemaNode',
+      data: { 
+        label: schema.name,
+        fields: schema.fields || [],
+        fieldCount: (schema.fields || []).length,
+        hasIssues: false // Will be set later
+      },
       position: { x: level * levelSpacing, y: offsetY },
       sourcePosition: Position.Right,
       targetPosition: Position.Left,
-      style: {
-        background: '#1a1a1a',
-        border: '1px solid #3a3a3a',
-        borderRadius: '8px',
-        padding: '12px 16px',
-        color: '#e8e8e8',
-        fontSize: '13px',
-        fontWeight: '500'
-      }
     });
   });
   
   // Create edges
+  // Create edges with enhanced styling
   relationships.forEach((rel, idx) => {
-    const edgeColor = rel.type.includes('embedded') ? '#7a5c3a' : '#c17532';
-    const strokeWidth = rel.type.includes('many') ? 2 : 1;
+    // Color coding based on relationship type
+    const edgeColor = rel.type.includes('embedded') ? '#8b6f47' : '#d88a4a';
+    const strokeWidth = rel.type.includes('many') ? 3 : 2;
     
     edges.push({
       id: `${rel.from}-${rel.to}-${idx}`,
@@ -577,14 +644,27 @@ const generateHierarchicalLayout = (schemas, relationships) => {
       label: rel.field,
       type: 'smoothstep',
       animated: rel.type.includes('many'),
-      style: { stroke: edgeColor, strokeWidth },
-      labelStyle: { fill: '#9b9b9b', fontSize: 10 },
-      labelBgStyle: { fill: '#1a1a1a' },
+      style: { 
+        stroke: edgeColor, 
+        strokeWidth,
+        strokeDasharray: rel.type.includes('embedded') ? '5,5' : '0'
+      },
+      labelStyle: { 
+        fill: '#e8e8e8', 
+        fontSize: 11,
+        fontWeight: 500
+      },
+      labelBgStyle: { 
+        fill: '#1a1a1a',
+        fillOpacity: 0.9
+      },
+      labelBgPadding: [4, 6],
+      labelBgBorderRadius: 4,
       markerEnd: {
         type: MarkerType.ArrowClosed,
         color: edgeColor,
-        width: 15,
-        height: 15
+        width: 20,
+        height: 20
       }
     });
   });
@@ -640,6 +720,182 @@ mongoose.model('Profile', ProfileSchema);
 mongoose.model('Tag', TagSchema);
 `;
 
+// Stats Dashboard Component
+const StatsDashboard = ({ schemas, relationships, issues }) => {
+  const [isCollapsed, setIsCollapsed] = useState(false);
+  const errorCount = issues.filter(i => i.severity === 'error').length;
+  const warningCount = issues.filter(i => i.severity === 'warning').length;
+  const infoCount = issues.filter(i => i.severity === 'info').length;
+  
+  // Calculate health score
+  const maxScore = 100;
+  const errorPenalty = errorCount * 15;
+  const warningPenalty = warningCount * 5;
+  const infoPenalty = infoCount * 2;
+  const healthScore = Math.max(0, maxScore - errorPenalty - warningPenalty - infoPenalty);
+  
+  // Find most connected schema
+  const connectionCounts = schemas.map(s => ({
+    name: s.name,
+    count: relationships.filter(r => r.from === s.id || r.to === s.id).length
+  }));
+  const mostConnected = connectionCounts.sort((a, b) => b.count - a.count)[0];
+  
+  const avgConnections = schemas.length > 0 
+    ? (relationships.length * 2 / schemas.length).toFixed(1) 
+    : 0;
+  
+  const getHealthColor = (score) => {
+    if (score >= 80) return 'text-[#4caf50]';
+    if (score >= 60) return 'text-[#e8a53a]';
+    return 'text-[#e84545]';
+  };
+  
+  return (
+    <div className="bg-[#1f1f1f] border border-[#2a2a2a] rounded-xl shadow-xl transition-all">
+      <div 
+        className="flex items-center justify-between p-4 cursor-pointer hover:bg-[#252525] transition-colors"
+        onClick={() => setIsCollapsed(!isCollapsed)}
+      >
+        <div className="flex items-center gap-2">
+          <TrendingUp className="w-5 h-5 text-[#c17532]" />
+          <h3 className="text-base font-medium">Project Health</h3>
+        </div>
+        <button className="p-1 hover:bg-[#2a2a2a] rounded transition-colors">
+          {isCollapsed ? <ChevronDown className="w-4 h-4" /> : <ChevronUp className="w-4 h-4" />}
+        </button>
+      </div>
+      
+      {!isCollapsed && (
+        <div className="px-4 pb-4">
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            <div className="bg-[#1a1a1a] rounded-lg p-3 border border-[#2a2a2a]">
+              <div className="text-xs text-[#9b9b9b] uppercase tracking-wide mb-1">Health Score</div>
+              <div className={`text-2xl font-bold ${getHealthColor(healthScore)}`}>
+                {healthScore}/100
+              </div>
+            </div>
+            
+            <div className="bg-[#1a1a1a] rounded-lg p-3 border border-[#2a2a2a]">
+              <div className="text-xs text-[#9b9b9b] uppercase tracking-wide mb-1">Schemas</div>
+              <div className="text-2xl font-bold text-[#e8e8e8]">{schemas.length}</div>
+              <div className="text-xs text-[#9b9b9b] mt-1">
+                {relationships.length} relationships
+              </div>
+            </div>
+            
+            <div className="bg-[#1a1a1a] rounded-lg p-3 border border-[#2a2a2a]">
+              <div className="text-xs text-[#9b9b9b] uppercase tracking-wide mb-1">Issues</div>
+              <div className="flex items-baseline gap-2">
+                {errorCount > 0 && (
+                  <span className="text-xl font-bold text-[#e84545]">{errorCount}</span>
+                )}
+                {warningCount > 0 && (
+                  <span className="text-xl font-bold text-[#e8a53a]">{warningCount}</span>
+                )}
+                {errorCount === 0 && warningCount === 0 && (
+                  <span className="text-xl font-bold text-[#4caf50]">0</span>
+                )}
+              </div>
+              <div className="text-xs text-[#9b9b9b] mt-1">
+                {infoCount} suggestions
+              </div>
+            </div>
+            
+            <div className="bg-[#1a1a1a] rounded-lg p-3 border border-[#2a2a2a]">
+              <div className="text-xs text-[#9b9b9b] uppercase tracking-wide mb-1">Most Connected</div>
+              <div className="text-base font-bold text-[#e8e8e8] truncate">
+                {mostConnected?.name || 'N/A'}
+              </div>
+              <div className="text-xs text-[#9b9b9b] mt-1">
+                {mostConnected?.count || 0} connections
+              </div>
+            </div>
+          </div>
+          
+          <div className="mt-3 pt-3 border-t border-[#2a2a2a]">
+            <div className="flex items-center justify-between text-sm">
+              <span className="text-[#9b9b9b]">Average connections per schema:</span>
+              <span className="text-[#e8e8e8] font-medium">{avgConnections}</span>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+// Improved Issue Categorization Component
+const IssuePanel = ({ issues, getSeverityIcon }) => {
+  const [isCollapsed, setIsCollapsed] = useState(false);
+  const categorizedIssues = {
+    error: issues.filter(i => i.severity === 'error'),
+    warning: issues.filter(i => i.severity === 'warning'),
+    info: issues.filter(i => i.severity === 'info'),
+  };
+  
+  const categories = [
+    { key: 'error', label: 'Critical', icon: '🔴', color: 'text-[#e84545]' },
+    { key: 'warning', label: 'Warnings', icon: '🟡', color: 'text-[#e8a53a]' },
+    { key: 'info', label: 'Suggestions', icon: '🔵', color: 'text-[#5a9fd4]' },
+  ];
+  
+  return (
+    <div className="absolute bottom-4 right-4 w-96 bg-[#1f1f1f] border border-[#2a2a2a] rounded-xl shadow-2xl overflow-hidden flex flex-col transition-all">
+      <div 
+        className="p-4 border-b border-[#2a2a2a] cursor-pointer hover:bg-[#252525] transition-colors flex items-center justify-between"
+        onClick={() => setIsCollapsed(!isCollapsed)}
+      >
+        <h3 className="font-medium flex items-center gap-2">
+          <AlertTriangle className="w-4 h-4 text-[#e8a53a]" />
+          Issues Detected ({issues.length})
+        </h3>
+        <button className="p-1 hover:bg-[#2a2a2a] rounded transition-colors">
+          {isCollapsed ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+        </button>
+      </div>
+      
+      {!isCollapsed && (
+        <div className="overflow-y-auto flex-1 p-4 space-y-4 max-h-[500px] [&::-webkit-scrollbar]:w-2 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:bg-[#3a3a3a] [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:hover:bg-[#4a4a4a]">
+          {categories.map(category => {
+            const categoryIssues = categorizedIssues[category.key];
+            if (categoryIssues.length === 0) return null;
+            
+            return (
+              <div key={category.key}>
+                <div className="flex items-center gap-2 mb-2">
+                  <span className="text-sm">{category.icon}</span>
+                  <span className={`text-sm font-medium ${category.color}`}>
+                    {category.label} ({categoryIssues.length})
+                  </span>
+                </div>
+                <div className="space-y-2">
+                  {categoryIssues.map((issue, idx) => (
+                    <div
+                      key={idx}
+                      className="p-3 rounded-lg bg-[#1a1a1a] border border-[#2a2a2a] text-sm"
+                    >
+                      <div className="flex items-start gap-2">
+                        {getSeverityIcon(issue.severity)}
+                        <div className="flex-1">
+                          <div className="font-medium text-xs uppercase tracking-wide mb-1 text-[#9b9b9b]">
+                            {issue.type.replace('-', ' ')}
+                          </div>
+                          <div className="text-[#e8e8e8] leading-snug">{issue.message}</div>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+};
+
 const SchemaAnalyzer = () => {
   const [schemas, setSchemas] = useState([]);
   const [relationships, setRelationships] = useState([]);
@@ -647,6 +903,7 @@ const SchemaAnalyzer = () => {
   const [selectedSchema, setSelectedSchema] = useState(null);
   const [uploadedCode, setUploadedCode] = useState('');
   const [view, setView] = useState('graph'); // 'graph' or 'list'
+  const reactFlowRef = useRef(null);
 
   const analyzeSchemas = useCallback((code) => {
     try {
@@ -665,8 +922,18 @@ const SchemaAnalyzer = () => {
 
   const { nodes, edges } = useMemo(() => {
     if (schemas.length === 0) return { nodes: [], edges: [] };
-    return generateHierarchicalLayout(schemas, relationships);
-  }, [schemas, relationships]);
+    const layout = generateHierarchicalLayout(schemas, relationships);
+    
+    // Mark nodes with issues
+    const issueSchemas = new Set(issues.map(i => i.schema));
+    layout.nodes.forEach(node => {
+      if (issueSchemas.has(node.id)) {
+        node.data.hasIssues = true;
+      }
+    });
+    
+    return layout;
+  }, [schemas, relationships, issues]);
 
   const handleFileUpload = (e) => {
     const files = Array.from(e.target.files || []);
@@ -723,6 +990,44 @@ const SchemaAnalyzer = () => {
     a.download = `schema-analysis-${Date.now()}.json`;
     a.click();
     URL.revokeObjectURL(url);
+  };
+
+  const exportAsImage = async (format = 'png') => {
+    const flowElement = reactFlowRef.current;
+    if (!flowElement) return;
+
+    try {
+      const dataUrl = format === 'svg' 
+        ? await toSvg(flowElement, {
+            backgroundColor: '#1a1a1a',
+            filter: (node) => {
+              // Exclude controls and background
+              if (node?.classList?.contains('react-flow__controls') || 
+                  node?.classList?.contains('react-flow__background')) {
+                return false;
+              }
+              return true;
+            },
+          })
+        : await toPng(flowElement, {
+            backgroundColor: '#1a1a1a',
+            pixelRatio: 2,
+            filter: (node) => {
+              if (node?.classList?.contains('react-flow__controls') || 
+                  node?.classList?.contains('react-flow__background')) {
+                return false;
+              }
+              return true;
+            },
+          });
+
+      const link = document.createElement('a');
+      link.download = `schema-graph-${Date.now()}.${format}`;
+      link.href = dataUrl;
+      link.click();
+    } catch (error) {
+      console.error('Export failed:', error);
+    }
   };
 
   const getRelationshipsForSchema = (schemaId) => {
@@ -791,13 +1096,38 @@ const SchemaAnalyzer = () => {
                     Details
                   </button>
                 </div>
-                <button
-                  onClick={exportAnalysis}
-                  className="px-4 py-2 bg-[#2a2a2a] hover:bg-[#333333] rounded-lg text-sm font-medium transition-colors flex items-center gap-2"
-                >
-                  <Download className="w-4 h-4" />
-                  Export
-                </button>
+                <div className="relative group">
+                  <button
+                    className="px-4 py-2 bg-[#2a2a2a] hover:bg-[#333333] rounded-lg text-sm font-medium transition-colors flex items-center gap-2"
+                  >
+                    <Download className="w-4 h-4" />
+                    Export
+                    <ChevronRight className="w-3 h-3 rotate-90" />
+                  </button>
+                  <div className="absolute right-0 top-full mt-1 w-48 bg-[#1f1f1f] border border-[#2a2a2a] rounded-lg shadow-xl opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all z-50">
+                    <button
+                      onClick={() => exportAsImage('png')}
+                      className="w-full px-4 py-2 text-left text-sm hover:bg-[#2a2a2a] transition-colors flex items-center gap-2 rounded-t-lg"
+                    >
+                      <Camera className="w-4 h-4" />
+                      Export as PNG
+                    </button>
+                    <button
+                      onClick={() => exportAsImage('svg')}
+                      className="w-full px-4 py-2 text-left text-sm hover:bg-[#2a2a2a] transition-colors flex items-center gap-2"
+                    >
+                      <FileCode className="w-4 h-4" />
+                      Export as SVG
+                    </button>
+                    <button
+                      onClick={exportAnalysis}
+                      className="w-full px-4 py-2 text-left text-sm hover:bg-[#2a2a2a] transition-colors flex items-center gap-2 rounded-b-lg"
+                    >
+                      <Download className="w-4 h-4" />
+                      Export as JSON
+                    </button>
+                  </div>
+                </div>
               </div>
             )}
           </div>
@@ -841,50 +1171,34 @@ const SchemaAnalyzer = () => {
           </div>
         </div>
       ) : view === 'graph' ? (
-        <div className="h-[calc(100vh-73px)] bg-[#1a1a1a]">
-          <ReactFlow
-            nodes={nodes}
-            edges={edges}
-            fitView
-            minZoom={0.1}
-            maxZoom={2}
-            defaultEdgeOptions={{
-              type: 'smoothstep',
-            }}
-          >
-            <Background color="#2a2a2a" gap={16} />
-            <Controls 
-              style={{
-                button: { background: '#2a2a2a', borderColor: '#3a3a3a', color: '#e8e8e8' }
-              }}
-            />
-          </ReactFlow>
+        <div className="h-[calc(100vh-73px)] bg-[#1a1a1a] relative">
+          <div ref={reactFlowRef} className="w-full h-full">
+            <ReactFlow
+              nodes={nodes}
+              edges={edges}
+              nodeTypes={nodeTypes}
+              fitView
+              minZoom={0.1}
+              maxZoom={2}
+              proOptions={{ hideAttribution: true }}
+            >
+              <Background color="#2a2a2a" gap={16} />
+              <Controls 
+                style={{
+                  button: { background: '#2a2a2a', borderColor: '#3a3a3a', color: '#e8e8e8' }
+                }}
+              />
+              
+              {/* Stats Dashboard Panel */}
+              <Panel position="top-left" className="m-4">
+                <StatsDashboard schemas={schemas} relationships={relationships} issues={issues} />
+              </Panel>
+            </ReactFlow>
+          </div>
           
+          {/* Improved Issue Panel */}
           {issues.length > 0 && (
-            <div className="absolute bottom-4 right-4 w-96 bg-[#1f1f1f] border border-[#2a2a2a] rounded-xl p-4 shadow-2xl max-h-[400px] overflow-y-auto  [&::-webkit-scrollbar]:w-2 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:bg-[#3a3a3a] [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:hover:bg-[#4a4a4a]">
-              <h3 className="font-medium mb-3 flex items-center gap-2">
-                <AlertTriangle className="w-4 h-4 text-[#e8a53a]" />
-                Issues Detected ({issues.length})
-              </h3>
-              <div className="space-y-2">
-                {issues.map((issue, idx) => (
-                  <div
-                    key={idx}
-                    className="p-3 rounded-lg bg-[#1a1a1a] border border-[#2a2a2a] text-sm"
-                  >
-                    <div className="flex items-start gap-2 mb-1">
-                      {getSeverityIcon(issue.severity)}
-                      <div className="flex-1">
-                        <div className="font-medium text-xs uppercase tracking-wide mb-1 text-[#9b9b9b]">
-                          {issue.type.replace('-', ' ')}
-                        </div>
-                        <div className="text-[#e8e8e8] leading-snug">{issue.message}</div>
-                      </div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
+            <IssuePanel issues={issues} getSeverityIcon={getSeverityIcon} />
           )}
         </div>
       ) : (
@@ -1050,4 +1364,10 @@ const SchemaAnalyzer = () => {
   );
 };
 
-export default SchemaAnalyzer;
+const WrappedSchemaAnalyzer = () => (
+  <ReactFlowProvider>
+    <SchemaAnalyzer />
+  </ReactFlowProvider>
+);
+
+export default WrappedSchemaAnalyzer;

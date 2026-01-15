@@ -24,3 +24,34 @@ body {
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
 }
+
+/* ReactFlow Edge Visibility */
+.react-flow__edge-path {
+  stroke: #d88a4a !important;
+  stroke-width: 2px !important;
+}
+
+.react-flow__edge.animated .react-flow__edge-path {
+  stroke-width: 3px !important;
+  animation: dashdraw 0.5s linear infinite;
+}
+
+.react-flow__edge-text {
+  fill: #e8e8e8 !important;
+  font-size: 11px !important;
+  font-weight: 500 !important;
+}
+
+.react-flow__edge-textbg {
+  fill: #1a1a1a !important;
+  fill-opacity: 0.9 !important;
+}
+
+@keyframes dashdraw {
+  from {
+    stroke-dashoffset: 10;
+  }
+  to {
+    stroke-dashoffset: 0;
+  }
+}
